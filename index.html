@@ -61,8 +61,8 @@
     <h1>Generador NFC Maps</h1>
     <input type="text" id="mapsUrl" placeholder="Pega URL o comparte desde la App...">
     <button id="convertBtn">Generar Link</button>
-    <div id="loading">Desenrollando enlace de Android... ⏳</div>
-    <div id="errorMsg" class="error">No se encontró un Place ID válido.</div>
+    <div id="loading">Procesando enlace... ⏳</div>
+    <div id="errorMsg" class="error">No se encontró un lugar válido en el enlace.</div>
 
     <div id="resultBox" class="result-box">
         <div class="info-label">URL para chip NFC / QR:</div>
@@ -86,7 +86,6 @@
     const unlockBtn = document.getElementById('unlockBtn');
     const passError = document.getElementById('passError');
 
-    // Función cifradora en cliente usando Web Crypto API
     async function sha256(message) {
         const msgBuffer = new TextEncoder().encode(message);
         const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
@@ -122,6 +121,17 @@
         if (e.key === 'Enter') authenticate();
     });
 
+    // Función matemática pura para convertir pares 0x1:0x2 a Place ID Protobuf
+    function hexToPlaceId(h1Raw, h2Raw) {
+        let h1 = h1Raw.replace('0x', '').padStart(16, '0').slice(-16);
+        let h2 = h2Raw.replace('0x', '').padStart(16, '0').slice(-16);
+        const getBytes = (hex) => { let b=[]; for(let i=14; i>=0; i-=2) b.push(parseInt(hex.substr(i,2),16)); return b; };
+        const buffer = [0x0A, 0x12, 0x09, ...getBytes(h1), 0x11, ...getBytes(h2)];
+        let bin=''; buffer.forEach(b => bin+=String.fromCharCode(b));
+        return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+
+    // Extractor multi-estrategia
     async function processUrl(rawText) {
         if (!rawText) return;
         
@@ -134,43 +144,46 @@
             showError();
             return;
         }
-        let url = urlMatch[1];
+        let targetUrl = urlMatch[1];
 
-        if (url.includes('maps.app.goo.gl')) {
+        // 1. Si es un shortlink de Android (maps.app.goo.gl), resolvemos la redirección mediante API Proxy fiable
+        if (targetUrl.includes('maps.app.goo.gl') || targetUrl.includes('goo.gl')) {
             try {
-                const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
-                const response = await fetch(proxyUrl);
-                const data = await response.json();
+                const res = await fetch(`https://corsproxy.io/?${encodeURIComponent(targetUrl)}`);
+                const html = await res.text();
                 
-                const chijMatch = data.contents.match(/(ChIJ[a-zA-Z0-9_-]+)/);
-                if (chijMatch) {
-                    renderResult(chijMatch[1]);
+                // Buscar ChIJ en el HTML resuelto
+                const chijInHtml = html.match(/(ChIJ[a-zA-Z0-9_-]{23})/);
+                if (chijInHtml) {
+                    renderResult(chijInHtml[1]);
+                    return;
+                }
+
+                // Buscar par 0x...:0x... en el HTML resuelto
+                const hexInHtml = html.match(/(0x[0-9a-fA-F]+):(0x[0-9a-fA-F]+)/);
+                if (hexInHtml) {
+                    const generatedPlaceId = hexToPlaceId(hexInHtml[1], hexInHtml[2]);
+                    renderResult(generatedPlaceId);
                     return;
                 }
             } catch (e) {
-                console.error("Error al resolver enlace corto", e);
+                console.warn("Fallo en CORS Proxy, intentando método de desfragmentación directa...", e);
             }
         } 
         
-        try {
-            const chijMatch = url.match(/(ChIJ[a-zA-Z0-9_-]+)/);
-            if (chijMatch) {
-                renderResult(chijMatch[1]);
-                return;
-            }
-            
-            const paramMatch = url.match(/(0x[0-9a-fA-F]+):(0x[0-9a-fA-F]+)/);
-            if (paramMatch) {
-                let h1 = paramMatch[1].replace('0x', '').padStart(16, '0').slice(-16);
-                let h2 = paramMatch[2].replace('0x', '').padStart(16, '0').slice(-16);
-                const getBytes = (hex) => { let b=[]; for(let i=14; i>=0; i-=2) b.push(parseInt(hex.substr(i,2),16)); return b; };
-                const buffer = [0x0A, 0x12, 0x09, ...getBytes(h1), 0x11, ...getBytes(h2)];
-                let bin=''; buffer.forEach(b => bin+=String.fromCharCode(b));
-                const placeId = btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-                renderResult(placeId);
-                return;
-            }
-        } catch(e) {}
+        // 2. Comprobación directa en la cadena de texto de la URL (para URLs compuestas)
+        const chijDirect = targetUrl.match(/(ChIJ[a-zA-Z0-9_-]{23})/);
+        if (chijDirect) {
+            renderResult(chijDirect[1]);
+            return;
+        }
+        
+        const hexDirect = targetUrl.match(/(0x[0-9a-fA-F]+):(0x[0-9a-fA-F]+)/);
+        if (hexDirect) {
+            const generatedPlaceId = hexToPlaceId(hexDirect[1], hexDirect[2]);
+            renderResult(generatedPlaceId);
+            return;
+        }
 
         showError();
     }
