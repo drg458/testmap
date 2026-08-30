@@ -6,7 +6,6 @@
     <title>Generador NFC y Reseñas</title>
     <link rel="manifest" href="manifest.json">
     <meta name="theme-color" content="#1a73e8">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <style>
         :root { --primary: #1a73e8; --bg: #f8f9fa; --card: #ffffff; --text: #202124; --border: #dadce0; --success: #34a853;}
         body { font-family: -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; box-sizing: border-box; }
@@ -19,7 +18,9 @@
         .info-label { font-size: 0.85rem; color: #5f6368; margin: 12px 0 4px; }
         .error { color: #d93025; font-size: 0.85rem; margin-top: 12px; display: none; text-align: center; }
         #qrcode { display: flex; justify-content: center; margin-top: 16px; background: #fff; padding: 10px; border-radius: 6px; }
+        #qrcode img { max-width: 100%; height: auto; }
         #loading { display: none; color: var(--primary); font-weight: bold; text-align: center; margin-top: 12px; }
+        .hint { font-size: 0.8rem; color: #5f6368; margin-top: 6px; text-align: center; }
 
         #lockScreen {
             position: fixed;
@@ -59,10 +60,11 @@
 
 <div class="container">
     <h1>Generador NFC Maps</h1>
-    <input type="text" id="mapsUrl" placeholder="Pega URL o comparte desde la App...">
+    <input type="text" id="mapsUrl" placeholder="Pega URL (ej. ChIJ... o enlace largo)">
+    <div class="hint">Tip: Si usas enlace corto de Maps, pega la URL completa del navegador web.</div>
     <button id="convertBtn">Generar Link</button>
-    <div id="loading">Procesando enlace... ⏳</div>
-    <div id="errorMsg" class="error">No se pudo extraer el lugar. Prueba a pegar la URL larga de Maps del navegador.</div>
+    <div id="loading">Procesando... ⏳</div>
+    <div id="errorMsg" class="error">Formato no reconocido. Asegúrate de incluir el Place ID (ChIJ...) o coordenadas.</div>
 
     <div id="resultBox" class="result-box">
         <div class="info-label">URL para chip NFC / QR:</div>
@@ -120,11 +122,10 @@
         if (e.key === 'Enter') authenticate();
     });
 
-    // Convierte el par Hexadecimal (0x...:0x...) al formato Protobuf Base64 de Google Maps
+    // Conversor Protobuf Hex a Place ID
     function hexToPlaceId(h1Raw, h2Raw) {
         let h1 = h1Raw.replace('0x', '').padStart(16, '0').slice(-16);
         let h2 = h2Raw.replace('0x', '').padStart(16, '0').slice(-16);
-        
         const getBytes = (hex) => {
             let bytes = [];
             for (let i = 14; i >= 0; i -= 2) {
@@ -132,64 +133,37 @@
             }
             return bytes;
         };
-
         const buffer = [0x0A, 0x12, 0x09, ...getBytes(h1), 0x11, ...getBytes(h2)];
         let binary = '';
         buffer.forEach(b => binary += String.fromCharCode(b));
         return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     }
 
-    function parseText(text) {
-        // 1. Detección directa de ChIJ
-        const chij = text.match(/(ChIJ[a-zA-Z0-9_-]{23})/);
-        if (chij) return chij[1];
-
-        // 2. Detección de par hexadecimal 0x...:0x...
-        const hex = text.match(/(0x[0-9a-fA-F]+):(0x[0-9a-fA-F]+)/);
-        if (hex) return hexToPlaceId(hex[1], hex[2]);
-
-        return null;
-    }
-
-    async function processUrl(rawText) {
+    function processUrl(rawText) {
         if (!rawText) return;
 
         document.getElementById('loading').style.display = 'block';
         document.getElementById('errorMsg').style.display = 'none';
         document.getElementById('resultBox').classList.remove('active');
 
-        const urlMatch = rawText.match(/(https?:\/\/[^\s]+)/);
-        if (!urlMatch) {
-            showError();
+        // 1. Búsqueda directa de ChIJ en el texto
+        const chijMatch = rawText.match(/(ChIJ[a-zA-Z0-9_-]{23})/);
+        if (chijMatch) {
+            renderResult(chijMatch[1]);
             return;
         }
 
-        let targetUrl = urlMatch[1];
-
-        // Intento 1: Búsqueda directa por si la URL ya contiene los datos
-        let placeId = parseText(targetUrl);
-        if (placeId) {
+        // 2. Búsqueda de par hexadecimal 0x...:0x...
+        const hexMatch = rawText.match(/(0x[0-9a-fA-F]+):(0x[0-9a-fA-F]+)/);
+        if (hexMatch) {
+            const placeId = hexToPlaceId(hexMatch[1], hexMatch[2]);
             renderResult(placeId);
             return;
         }
 
-        // Intento 2: Resolver enlace corto usando proxy CORS limpio y seguro
-        if (targetUrl.includes('goo.gl') || targetUrl.includes('maps.app')) {
-            try {
-                const res = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`);
-                const htmlText = await res.text();
-                
-                placeId = parseText(htmlText);
-                if (placeId) {
-                    renderResult(placeId);
-                    return;
-                }
-            } catch (e) {
-                console.warn("Fallo el proxy principal, intentando método alternativo...", e);
-            }
-        }
-
-        showError();
+        // Si es un shortlink puro sin resolver por red, avisamos amablemente que use el enlace largo de Maps
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('errorMsg').style.display = 'block';
     }
 
     function renderResult(placeId) {
@@ -198,15 +172,13 @@
         document.getElementById('reviewUrlOutput').value = finalUrl;
         document.getElementById('resultBox').classList.add('active');
 
+        // Generador de QR nativo mediante API ligera sin dependencias de terceros ni bloqueos CORS
         const qrContainer = document.getElementById('qrcode');
         qrContainer.innerHTML = '';
-        new QRCode(qrContainer, { text: finalUrl, width: 150, height: 150 });
-    }
-
-    function showError() {
-        document.getElementById('loading').style.divStyle = 'block'; // safety
-        document.getElementById('loading').style.display = 'none';
-        document.getElementById('errorMsg').style.display = 'block';
+        const qrImg = document.createElement('img');
+        qrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(finalUrl)}`;
+        qrImg.alt = "Código QR Reseña";
+        qrContainer.appendChild(qrImg);
     }
 
     document.getElementById('convertBtn').addEventListener('click', () => {
