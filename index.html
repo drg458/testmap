@@ -21,7 +21,7 @@
         #qrcode { display: flex; justify-content: center; margin-top: 16px; background: #fff; padding: 10px; border-radius: 6px; }
         #qrcode img { max-width: 100%; height: auto; }
         #loading { display: none; color: var(--primary); font-weight: bold; text-align: center; margin-top: 12px; }
-        .hint { font-size: 0.8rem; color: #5f6368; margin-top: 6px; text-align: center; }
+        .hint { font-size: 0.8rem; color: #5f6368; margin-top: 8px; line-height: 1.4; background: #e8f0fe; padding: 8px; border-radius: 4px; }
 
         #lockScreen {
             position: fixed;
@@ -61,11 +61,13 @@
 
 <div class="container">
     <h1>Generador NFC Maps</h1>
-    <input type="text" id="mapsUrl" placeholder="Pega URL de Maps (ej. ChIJ... o enlace largo)">
-    <div class="hint">Tip: Pega la URL larga de Maps del navegador para un resultado instantáneo.</div>
+    <input type="text" id="mapsUrl" placeholder="Pega URL o ChIJ...">
+    <div class="hint">
+        💡 <b>Nota sobre enlaces cortos (maps.app.goo.gl):</b> Por restricciones de seguridad de Google, los navegadores bloquean la lectura de redirecciones cortas mediante scripts. Por favor, pega la <b>URL larga del navegador</b> o el código <b>ChIJ...</b> de Google Maps para una generación instantánea.
+    </div>
     <button id="convertBtn">Generar Link</button>
-    <div id="loading">Procesando enlace... ⏳</div>
-    <div id="errorMsg" class="error">Formato no reconocido. Asegúrate de incluir el Place ID (ChIJ...) o coordenadas.</div>
+    <div id="loading">Procesando... ⏳</div>
+    <div id="errorMsg" class="error">Formato no reconocido. Asegúrate de incluir el Place ID (ChIJ...) o la URL completa de Maps.</div>
 
     <div id="resultBox" class="result-box">
         <div class="info-label">URL para chip NFC / QR:</div>
@@ -159,23 +161,18 @@
         document.getElementById('resultBox').classList.remove('active');
 
         const urlMatch = rawText.match(/(https?:\/\/[^\s]+)/);
-        if (!urlMatch) {
-            showError();
-            return;
-        }
+        let targetUrl = urlMatch ? urlMatch[1] : rawText;
 
-        let targetUrl = urlMatch[1];
-
-        // Extracción directa instantánea (Sin bloqueos de red ni QUIC timeouts)
+        // Extracción directa local (Instantánea, sin bloqueos ni QUIC timeouts)
         let placeId = parseTextForPlaceId(targetUrl);
         if (placeId) {
             renderResult(placeId);
             return;
         }
 
-        // Si es un enlace corto puro de Google Maps sin los datos dentro de la URL, 
-        // indicamos amablemente que peguen la URL larga del navegador.
-        showError();
+        // Si es un shortlink puro, mostramos directamente el aviso explicativo
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('errorMsg').style.display = 'block';
     }
 
     function renderResult(placeId) {
@@ -190,11 +187,6 @@
         qrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(finalUrl)}`;
         qrImg.alt = "Código QR Reseña";
         qrContainer.appendChild(qrImg);
-    }
-
-    function showError() {
-        document.getElementById('loading').style.display = 'none';
-        document.getElementById('errorMsg').style.display = 'block';
     }
 
     document.getElementById('convertBtn').addEventListener('click', () => {
