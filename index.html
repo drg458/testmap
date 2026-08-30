@@ -21,6 +21,7 @@
         #qrcode { display: flex; justify-content: center; margin-top: 16px; background: #fff; padding: 10px; border-radius: 6px; }
         #qrcode img { max-width: 100%; height: auto; }
         #loading { display: none; color: var(--primary); font-weight: bold; text-align: center; margin-top: 12px; }
+        .hint { font-size: 0.8rem; color: #5f6368; margin-top: 6px; text-align: center; }
 
         #lockScreen {
             position: fixed;
@@ -60,10 +61,11 @@
 
 <div class="container">
     <h1>Generador NFC Maps</h1>
-    <input type="text" id="mapsUrl" placeholder="Pega URL o comparte desde la App...">
+    <input type="text" id="mapsUrl" placeholder="Pega URL de Maps (ej. ChIJ... o enlace largo)">
+    <div class="hint">Tip: Pega la URL larga de Maps del navegador para un resultado instantáneo.</div>
     <button id="convertBtn">Generar Link</button>
-    <div id="loading">Resolviendo enlace corto de Maps... ⏳</div>
-    <div id="errorMsg" class="error">No se pudo extraer el lugar del enlace. Comprueba que sea válido.</div>
+    <div id="loading">Procesando enlace... ⏳</div>
+    <div id="errorMsg" class="error">Formato no reconocido. Asegúrate de incluir el Place ID (ChIJ...) o coordenadas.</div>
 
     <div id="resultBox" class="result-box">
         <div class="info-label">URL para chip NFC / QR:</div>
@@ -149,7 +151,7 @@
         return null;
     }
 
-    async function processUrl(rawText) {
+    function processUrl(rawText) {
         if (!rawText) return;
 
         document.getElementById('loading').style.display = 'block';
@@ -164,43 +166,15 @@
 
         let targetUrl = urlMatch[1];
 
-        // 1. Búsqueda directa si la URL ya contiene los datos
+        // Extracción directa instantánea (Sin bloqueos de red ni QUIC timeouts)
         let placeId = parseTextForPlaceId(targetUrl);
         if (placeId) {
             renderResult(placeId);
             return;
         }
 
-        // 2. Si es enlace corto, usamos codetabs para evitar el 403 de corsproxy
-        if (targetUrl.includes('goo.gl') || targetUrl.includes('maps.app')) {
-            try {
-                const res = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`);
-                const htmlText = await res.text();
-                
-                placeId = parseTextForPlaceId(htmlText);
-                if (placeId) {
-                    renderResult(placeId);
-                    return;
-                }
-            } catch (e) {
-                console.warn("Fallo el proxy alternativo, intentando método de respaldo...");
-            }
-
-            // Respaldo adicional: allorigins
-            try {
-                const res2 = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`);
-                const htmlText2 = await res2.text();
-                
-                placeId = parseTextForPlaceId(htmlText2);
-                if (placeId) {
-                    renderResult(placeId);
-                    return;
-                }
-            } catch (e2) {
-                console.warn("Fallo el respaldo de allorigins.");
-            }
-        }
-
+        // Si es un enlace corto puro de Google Maps sin los datos dentro de la URL, 
+        // indicamos amablemente que peguen la URL larga del navegador.
         showError();
     }
 
