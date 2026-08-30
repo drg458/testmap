@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Generador NFC y Reseñas</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#1a73e8">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <style>
+        :root { --primary: #1a73e8; --bg: #f8f9fa; --card: #ffffff; --text: #202124; --border: #dadce0; --success: #34a853;}
+        body { font-family: -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; box-sizing: border-box; }
+        .container { background: var(--card); padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); width: 100%; max-width: 500px; }
+        h1 { font-size: 1.4rem; margin-top: 0; color: var(--primary); text-align: center; }
+        input[type="text"], input[type="password"] { width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 6px; box-sizing: border-box; outline: none; font-size: 1rem; }
+        button { width: 100%; padding: 12px; background: var(--primary); color: white; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; margin-top: 16px; font-size: 1rem; }
+        .result-box { display: none; margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border); }
+        .result-box.active { display: block; }
+        .info-label { font-size: 0.85rem; color: #5f6368; margin: 12px 0 4px; }
+        .error { color: #d93025; font-size: 0.85rem; margin-top: 12px; display: none; text-align: center; }
+        #qrcode { display: flex; justify-content: center; margin-top: 16px; background: #fff; padding: 10px; border-radius: 6px; }
+        #loading { display: none; color: var(--primary); font-weight: bold; text-align: center; margin-top: 12px; }
+
+        #lockScreen {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: #ffffff;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 99999;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        .lock-card {
+            background: var(--card);
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            width: 100%;
+            max-width: 360px;
+            text-align: center;
+        }
+        .lock-card h2 { margin-top: 0; color: var(--primary); font-size: 1.3rem; }
+    </style>
+</head>
+<body>
+
+<div id="lockScreen">
+    <div class="lock-card">
+        <h2>🔒 Acceso Restringido</h2>
+        <p style="font-size: 0.9rem; color: #5f6368; margin-bottom: 20px;">Introduce la clave de acceso</p>
+        <input type="password" id="passInput" placeholder="Contraseña..." autocomplete="current-password">
+        <button id="unlockBtn">Desbloquear</button>
+        <div id="passError" class="error">Contraseña incorrecta</div>
+    </div>
+</div>
+
+<div class="container">
+    <h1>Generador NFC Maps</h1>
+    <input type="text" id="mapsUrl" placeholder="Pega URL o comparte desde la App...">
+    <button id="convertBtn">Generar Link</button>
+    <div id="loading">Desenrollando enlace de Android... ⏳</div>
+    <div id="errorMsg" class="error">No se encontró un Place ID válido.</div>
+
+    <div id="resultBox" class="result-box">
+        <div class="info-label">URL para chip NFC / QR:</div>
+        <input type="text" id="reviewUrlOutput" readonly>
+        <button id="copyBtn" style="background:#3c4043;">Copiar URL</button>
+        <div class="info-label" style="text-align: center;">Código QR:</div>
+        <div id="qrcode"></div>
+    </div>
+</div>
+
+<script>
+    // Hash SHA-256 de la contraseña predeterminada ("1234")
+    const TARGET_HASH = "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4";
+
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('sw.js');
+    }
+
+    const lockScreen = document.getElementById('lockScreen');
+    const passInput = document.getElementById('passInput');
+    const unlockBtn = document.getElementById('unlockBtn');
+    const passError = document.getElementById('passError');
+
+    // Función cifradora en cliente usando Web Crypto API
+    async function sha256(message) {
+        const msgBuffer = new TextEncoder().encode(message);
+        const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    function checkAuth() {
+        if (sessionStorage.getItem('app_authenticated') === 'true') {
+            lockScreen.style.display = 'none';
+            initSharedUrl();
+        } else {
+            lockScreen.style.display = 'flex';
+        }
+    }
+
+    async function authenticate() {
+        const hashedInput = await sha256(passInput.value);
+        if (hashedInput === TARGET_HASH) {
+            sessionStorage.setItem('app_authenticated', 'true');
+            lockScreen.style.display = 'none';
+            passError.style.display = 'none';
+            initSharedUrl();
+        } else {
+            passError.style.display = 'block';
+            passInput.value = '';
+            passInput.focus();
+        }
+    }
+
+    unlockBtn.addEventListener('click', authenticate);
+    passInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') authenticate();
+    });
+
+    async function processUrl(rawText) {
+        if (!rawText) return;
+        
+        document.getElementById('loading').style.display = 'block';
+        document.getElementById('errorMsg').style.display = 'none';
+        document.getElementById('resultBox').classList.remove('active');
+        
+        const urlMatch = rawText.match(/(https?:\/\/[^\s]+)/);
+        if (!urlMatch) {
+            showError();
+            return;
+        }
+        let url = urlMatch[1];
+
+        if (url.includes('maps.app.goo.gl')) {
+            try {
+                const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+                const response = await fetch(proxyUrl);
+                const data = await response.json();
+                
+                const chijMatch = data.contents.match(/(ChIJ[a-zA-Z0-9_-]+)/);
+                if (chijMatch) {
+                    renderResult(chijMatch[1]);
+                    return;
+                }
+            } catch (e) {
+                console.error("Error al resolver enlace corto", e);
+            }
+        } 
+        
+        try {
+            const chijMatch = url.match(/(ChIJ[a-zA-Z0-9_-]+)/);
+            if (chijMatch) {
+                renderResult(chijMatch[1]);
+                return;
+            }
+            
+            const paramMatch = url.match(/(0x[0-9a-fA-F]+):(0x[0-9a-fA-F]+)/);
+            if (paramMatch) {
+                let h1 = paramMatch[1].replace('0x', '').padStart(16, '0').slice(-16);
+                let h2 = paramMatch[2].replace('0x', '').padStart(16, '0').slice(-16);
+                const getBytes = (hex) => { let b=[]; for(let i=14; i>=0; i-=2) b.push(parseInt(hex.substr(i,2),16)); return b; };
+                const buffer = [0x0A, 0x12, 0x09, ...getBytes(h1), 0x11, ...getBytes(h2)];
+                let bin=''; buffer.forEach(b => bin+=String.fromCharCode(b));
+                const placeId = btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+                renderResult(placeId);
+                return;
+            }
+        } catch(e) {}
+
+        showError();
+    }
+
+    function renderResult(placeId) {
+        document.getElementById('loading').style.display = 'none';
+        const finalUrl = `https://search.google.com/local/writereview?placeid=${placeId}`;
+        document.getElementById('reviewUrlOutput').value = finalUrl;
+        document.getElementById('resultBox').classList.add('active');
+        
+        const qrContainer = document.getElementById('qrcode');
+        qrContainer.innerHTML = '';
+        new QRCode(qrContainer, { text: finalUrl, width: 150, height: 150 });
+    }
+
+    function showError() {
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('errorMsg').style.display = 'block';
+    }
+
+    document.getElementById('convertBtn').addEventListener('click', () => {
+        processUrl(document.getElementById('mapsUrl').value.trim());
+    });
+    
+    document.getElementById('copyBtn').addEventListener('click', function() {
+        const input = document.getElementById('reviewUrlOutput');
+        input.select();
+        navigator.clipboard.writeText(input.value).then(() => {
+            this.textContent = '¡Copiado!';
+            this.style.background = '#34a853';
+            setTimeout(() => { this.textContent = 'Copiar URL'; this.style.background = '#3c4043'; }, 2000);
+        });
+    });
+
+    function initSharedUrl() {
+        const urlParams = new URLSearchParams(window.location.search);
+        const sharedText = urlParams.get('text') || urlParams.get('url') || urlParams.get('title');
+        if (sharedText && !document.getElementById('mapsUrl').value) {
+            document.getElementById('mapsUrl').value = sharedText;
+            processUrl(sharedText);
+        }
+    }
+
+    window.addEventListener('DOMContentLoaded', checkAuth);
+</script>
+</body>
+</html>
