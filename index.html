@@ -74,7 +74,6 @@
 </div>
 
 <script>
-    // Hash SHA-256 de la contraseña predeterminada ("1234")
     const TARGET_HASH = "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4";
 
     if ('serviceWorker' in navigator) {
@@ -121,68 +120,88 @@
         if (e.key === 'Enter') authenticate();
     });
 
-    // Función matemática pura para convertir pares 0x1:0x2 a Place ID Protobuf
+    // Convierte el par Hexadecimal (0x...:0x...) al formato Protobuf Base64 oficial de Google
     function hexToPlaceId(h1Raw, h2Raw) {
         let h1 = h1Raw.replace('0x', '').padStart(16, '0').slice(-16);
         let h2 = h2Raw.replace('0x', '').padStart(16, '0').slice(-16);
-        const getBytes = (hex) => { let b=[]; for(let i=14; i>=0; i-=2) b.push(parseInt(hex.substr(i,2),16)); return b; };
+        
+        const getBytes = (hex) => {
+            let bytes = [];
+            for (let i = 14; i >= 0; i -= 2) {
+                bytes.push(parseInt(hex.substr(i, 2), 16));
+            }
+            return bytes;
+        };
+
         const buffer = [0x0A, 0x12, 0x09, ...getBytes(h1), 0x11, ...getBytes(h2)];
-        let bin=''; buffer.forEach(b => bin+=String.fromCharCode(b));
-        return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        let binary = '';
+        buffer.forEach(b => binary += String.fromCharCode(b));
+        return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     }
 
-    // Extractor multi-estrategia
+    function parseText(text) {
+        // 1. Detección directa de ChIJ
+        const chij = text.match(/(ChIJ[a-zA-Z0-9_-]{23})/);
+        if (chij) return chij[1];
+
+        // 2. Detección de par 0x...:0x... (Hexadecimal de Maps)
+        const hex = text.match(/(0x[0-9a-fA-F]+):(0x[0-9a-fA-F]+)/);
+        if (hex) return hexToPlaceId(hex[1], hex[2]);
+
+        return null;
+    }
+
     async function processUrl(rawText) {
         if (!rawText) return;
-        
+
         document.getElementById('loading').style.display = 'block';
         document.getElementById('errorMsg').style.display = 'none';
         document.getElementById('resultBox').classList.remove('active');
-        
+
         const urlMatch = rawText.match(/(https?:\/\/[^\s]+)/);
         if (!urlMatch) {
             showError();
             return;
         }
+
         let targetUrl = urlMatch[1];
 
-        // 1. Si es un shortlink de Android (maps.app.goo.gl), resolvemos la redirección mediante API Proxy fiable
-        if (targetUrl.includes('maps.app.goo.gl') || targetUrl.includes('goo.gl')) {
-            try {
-                const res = await fetch(`https://corsproxy.io/?${encodeURIComponent(targetUrl)}`);
-                const html = await res.text();
-                
-                // Buscar ChIJ en el HTML resuelto
-                const chijInHtml = html.match(/(ChIJ[a-zA-Z0-9_-]{23})/);
-                if (chijInHtml) {
-                    renderResult(chijInHtml[1]);
-                    return;
-                }
+        // Intento 1: Extracción directa si la URL ya trae los datos
+        let placeId = parseText(targetUrl);
+        if (placeId) {
+            renderResult(placeId);
+            return;
+        }
 
-                // Buscar par 0x...:0x... en el HTML resuelto
-                const hexInHtml = html.match(/(0x[0-9a-fA-F]+):(0x[0-9a-fA-F]+)/);
-                if (hexInHtml) {
-                    const generatedPlaceId = hexToPlaceId(hexInHtml[1], hexInHtml[2]);
-                    renderResult(generatedPlaceId);
+        // Intento 2: Desenrollar mediante endpoint JSON fiable (wtlink / proxy fallback)
+        if (targetUrl.includes('goo.gl') || targetUrl.includes('maps.app')) {
+            try {
+                // Utiliza la API pública de traducción de URLs para evitar bloqueos CORS
+                const res = await fetch(`https://api.redirect-checker.net/api/v1/check?url=${encodeURIComponent(targetUrl)}`);
+                const data = await res.json();
+                if (data && data.result && data.result.final_url) {
+                    placeId = parseText(data.result.final_url);
+                    if (placeId) {
+                        renderResult(placeId);
+                        return;
+                    }
+                }
+            } catch (e) {
+                console.warn("Fallo el verificador primario, ejecutando extractor secundario...", e);
+            }
+
+            // Intento 3: Decodificación por patrón alternativo si falla la red
+            try {
+                const response = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`);
+                const htmlText = await response.text();
+                placeId = parseText(htmlText);
+                if (placeId) {
+                    renderResult(placeId);
                     return;
                 }
             } catch (e) {
-                console.warn("Fallo en CORS Proxy, intentando método de desfragmentación directa...", e);
+                console.error("No se pudo obtener la URL de destino.", e);
             }
-        } 
-        
-        // 2. Comprobación directa en la cadena de texto de la URL (para URLs compuestas)
-        const chijDirect = targetUrl.match(/(ChIJ[a-zA-Z0-9_-]{23})/);
-        if (chijDirect) {
-            renderResult(chijDirect[1]);
-            return;
-        }
-        
-        const hexDirect = targetUrl.match(/(0x[0-9a-fA-F]+):(0x[0-9a-fA-F]+)/);
-        if (hexDirect) {
-            const generatedPlaceId = hexToPlaceId(hexDirect[1], hexDirect[2]);
-            renderResult(generatedPlaceId);
-            return;
         }
 
         showError();
@@ -193,7 +212,7 @@
         const finalUrl = `https://search.google.com/local/writereview?placeid=${placeId}`;
         document.getElementById('reviewUrlOutput').value = finalUrl;
         document.getElementById('resultBox').classList.add('active');
-        
+
         const qrContainer = document.getElementById('qrcode');
         qrContainer.innerHTML = '';
         new QRCode(qrContainer, { text: finalUrl, width: 150, height: 150 });
@@ -207,7 +226,7 @@
     document.getElementById('convertBtn').addEventListener('click', () => {
         processUrl(document.getElementById('mapsUrl').value.trim());
     });
-    
+
     document.getElementById('copyBtn').addEventListener('click', function() {
         const input = document.getElementById('reviewUrlOutput');
         input.select();
