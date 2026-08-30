@@ -62,7 +62,7 @@
     <input type="text" id="mapsUrl" placeholder="Pega URL o comparte desde la App...">
     <button id="convertBtn">Generar Link</button>
     <div id="loading">Procesando enlace... ⏳</div>
-    <div id="errorMsg" class="error">No se encontró un lugar válido en el enlace.</div>
+    <div id="errorMsg" class="error">No se pudo extraer el lugar. Prueba a pegar la URL larga de Maps del navegador.</div>
 
     <div id="resultBox" class="result-box">
         <div class="info-label">URL para chip NFC / QR:</div>
@@ -120,7 +120,7 @@
         if (e.key === 'Enter') authenticate();
     });
 
-    // Convierte el par Hexadecimal (0x...:0x...) al formato Protobuf Base64 oficial de Google
+    // Convierte el par Hexadecimal (0x...:0x...) al formato Protobuf Base64 de Google Maps
     function hexToPlaceId(h1Raw, h2Raw) {
         let h1 = h1Raw.replace('0x', '').padStart(16, '0').slice(-16);
         let h2 = h2Raw.replace('0x', '').padStart(16, '0').slice(-16);
@@ -144,7 +144,7 @@
         const chij = text.match(/(ChIJ[a-zA-Z0-9_-]{23})/);
         if (chij) return chij[1];
 
-        // 2. Detección de par 0x...:0x... (Hexadecimal de Maps)
+        // 2. Detección de par hexadecimal 0x...:0x...
         const hex = text.match(/(0x[0-9a-fA-F]+):(0x[0-9a-fA-F]+)/);
         if (hex) return hexToPlaceId(hex[1], hex[2]);
 
@@ -166,41 +166,26 @@
 
         let targetUrl = urlMatch[1];
 
-        // Intento 1: Extracción directa si la URL ya trae los datos
+        // Intento 1: Búsqueda directa por si la URL ya contiene los datos
         let placeId = parseText(targetUrl);
         if (placeId) {
             renderResult(placeId);
             return;
         }
 
-        // Intento 2: Desenrollar mediante endpoint JSON fiable (wtlink / proxy fallback)
+        // Intento 2: Resolver enlace corto usando proxy CORS limpio y seguro
         if (targetUrl.includes('goo.gl') || targetUrl.includes('maps.app')) {
             try {
-                // Utiliza la API pública de traducción de URLs para evitar bloqueos CORS
-                const res = await fetch(`https://api.redirect-checker.net/api/v1/check?url=${encodeURIComponent(targetUrl)}`);
-                const data = await res.json();
-                if (data && data.result && data.result.final_url) {
-                    placeId = parseText(data.result.final_url);
-                    if (placeId) {
-                        renderResult(placeId);
-                        return;
-                    }
-                }
-            } catch (e) {
-                console.warn("Fallo el verificador primario, ejecutando extractor secundario...", e);
-            }
-
-            // Intento 3: Decodificación por patrón alternativo si falla la red
-            try {
-                const response = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`);
-                const htmlText = await response.text();
+                const res = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`);
+                const htmlText = await res.text();
+                
                 placeId = parseText(htmlText);
                 if (placeId) {
                     renderResult(placeId);
                     return;
                 }
             } catch (e) {
-                console.error("No se pudo obtener la URL de destino.", e);
+                console.warn("Fallo el proxy principal, intentando método alternativo...", e);
             }
         }
 
@@ -219,6 +204,7 @@
     }
 
     function showError() {
+        document.getElementById('loading').style.divStyle = 'block'; // safety
         document.getElementById('loading').style.display = 'none';
         document.getElementById('errorMsg').style.display = 'block';
     }
