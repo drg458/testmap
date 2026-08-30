@@ -6,7 +6,7 @@
     <title>Generador NFC y Reseñas</title>
     <link rel="manifest" href="manifest.json">
     <meta name="theme-color" content="#1a73e8">
-    <link rel="icon" href="data:,">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <style>
         :root { --primary: #1a73e8; --bg: #f8f9fa; --card: #ffffff; --text: #202124; --border: #dadce0; --success: #34a853;}
         body { font-family: -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; box-sizing: border-box; }
@@ -19,9 +19,7 @@
         .info-label { font-size: 0.85rem; color: #5f6368; margin: 12px 0 4px; }
         .error { color: #d93025; font-size: 0.85rem; margin-top: 12px; display: none; text-align: center; }
         #qrcode { display: flex; justify-content: center; margin-top: 16px; background: #fff; padding: 10px; border-radius: 6px; }
-        #qrcode img { max-width: 100%; height: auto; }
         #loading { display: none; color: var(--primary); font-weight: bold; text-align: center; margin-top: 12px; }
-        .hint { font-size: 0.8rem; color: #5f6368; margin-top: 8px; line-height: 1.4; background: #e8f0fe; padding: 8px; border-radius: 4px; }
 
         #lockScreen {
             position: fixed;
@@ -61,13 +59,10 @@
 
 <div class="container">
     <h1>Generador NFC Maps</h1>
-    <input type="text" id="mapsUrl" placeholder="Pega URL o ChIJ...">
-    <div class="hint">
-        💡 <b>Nota sobre enlaces cortos (maps.app.goo.gl):</b> Por restricciones de seguridad de Google, los navegadores bloquean la lectura de redirecciones cortas mediante scripts. Por favor, pega la <b>URL larga del navegador</b> o el código <b>ChIJ...</b> de Google Maps para una generación instantánea.
-    </div>
+    <input type="text" id="mapsUrl" placeholder="Pega URL o comparte desde la App...">
     <button id="convertBtn">Generar Link</button>
-    <div id="loading">Procesando... ⏳</div>
-    <div id="errorMsg" class="error">Formato no reconocido. Asegúrate de incluir el Place ID (ChIJ...) o la URL completa de Maps.</div>
+    <div id="loading">Procesando enlace... ⏳</div>
+    <div id="errorMsg" class="error">No se encontró un lugar válido en el enlace.</div>
 
     <div id="resultBox" class="result-box">
         <div class="info-label">URL para chip NFC / QR:</div>
@@ -125,10 +120,11 @@
         if (e.key === 'Enter') authenticate();
     });
 
-    // Conversor de pares Hex a Place ID (Protobuf Base64)
+    // Convierte el par Hexadecimal (0x...:0x...) al formato Protobuf Base64 oficial de Google
     function hexToPlaceId(h1Raw, h2Raw) {
         let h1 = h1Raw.replace('0x', '').padStart(16, '0').slice(-16);
         let h2 = h2Raw.replace('0x', '').padStart(16, '0').slice(-16);
+        
         const getBytes = (hex) => {
             let bytes = [];
             for (let i = 14; i >= 0; i -= 2) {
@@ -136,24 +132,26 @@
             }
             return bytes;
         };
+
         const buffer = [0x0A, 0x12, 0x09, ...getBytes(h1), 0x11, ...getBytes(h2)];
         let binary = '';
         buffer.forEach(b => binary += String.fromCharCode(b));
         return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     }
 
-    function parseTextForPlaceId(text) {
-        const chijMatch = text.match(/(ChIJ[a-zA-Z0-9_-]{23})/);
-        if (chijMatch) return chijMatch[1];
+    function parseText(text) {
+        // 1. Detección directa de ChIJ
+        const chij = text.match(/(ChIJ[a-zA-Z0-9_-]{23})/);
+        if (chij) return chij[1];
 
-        const hexMatch = text.match(/(0x[0-9a-fA-F]+):(0x[0-9a-fA-F]+)/);
-        if (hexMatch) {
-            return hexToPlaceId(hexMatch[1], hexMatch[2]);
-        }
+        // 2. Detección de par 0x...:0x... (Hexadecimal de Maps)
+        const hex = text.match(/(0x[0-9a-fA-F]+):(0x[0-9a-fA-F]+)/);
+        if (hex) return hexToPlaceId(hex[1], hex[2]);
+
         return null;
     }
 
-    function processUrl(rawText) {
+    async function processUrl(rawText) {
         if (!rawText) return;
 
         document.getElementById('loading').style.display = 'block';
@@ -161,18 +159,52 @@
         document.getElementById('resultBox').classList.remove('active');
 
         const urlMatch = rawText.match(/(https?:\/\/[^\s]+)/);
-        let targetUrl = urlMatch ? urlMatch[1] : rawText;
+        if (!urlMatch) {
+            showError();
+            return;
+        }
 
-        // Extracción directa local (Instantánea, sin bloqueos ni QUIC timeouts)
-        let placeId = parseTextForPlaceId(targetUrl);
+        let targetUrl = urlMatch[1];
+
+        // Intento 1: Extracción directa si la URL ya trae los datos
+        let placeId = parseText(targetUrl);
         if (placeId) {
             renderResult(placeId);
             return;
         }
 
-        // Si es un shortlink puro, mostramos directamente el aviso explicativo
-        document.getElementById('loading').style.display = 'none';
-        document.getElementById('errorMsg').style.display = 'block';
+        // Intento 2: Desenrollar mediante endpoint JSON fiable (wtlink / proxy fallback)
+        if (targetUrl.includes('goo.gl') || targetUrl.includes('maps.app')) {
+            try {
+                // Utiliza la API pública de traducción de URLs para evitar bloqueos CORS
+                const res = await fetch(`https://api.redirect-checker.net/api/v1/check?url=${encodeURIComponent(targetUrl)}`);
+                const data = await res.json();
+                if (data && data.result && data.result.final_url) {
+                    placeId = parseText(data.result.final_url);
+                    if (placeId) {
+                        renderResult(placeId);
+                        return;
+                    }
+                }
+            } catch (e) {
+                console.warn("Fallo el verificador primario, ejecutando extractor secundario...", e);
+            }
+
+            // Intento 3: Decodificación por patrón alternativo si falla la red
+            try {
+                const response = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`);
+                const htmlText = await response.text();
+                placeId = parseText(htmlText);
+                if (placeId) {
+                    renderResult(placeId);
+                    return;
+                }
+            } catch (e) {
+                console.error("No se pudo obtener la URL de destino.", e);
+            }
+        }
+
+        showError();
     }
 
     function renderResult(placeId) {
@@ -183,10 +215,12 @@
 
         const qrContainer = document.getElementById('qrcode');
         qrContainer.innerHTML = '';
-        const qrImg = document.createElement('img');
-        qrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(finalUrl)}`;
-        qrImg.alt = "Código QR Reseña";
-        qrContainer.appendChild(qrImg);
+        new QRCode(qrContainer, { text: finalUrl, width: 150, height: 150 });
+    }
+
+    function showError() {
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('errorMsg').style.display = 'block';
     }
 
     document.getElementById('convertBtn').addEventListener('click', () => {
